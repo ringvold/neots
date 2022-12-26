@@ -1,13 +1,14 @@
 # neots (NeoOTS)
 
 Inspired by https://github.com/sniptt-official/ots but but implements 
-ChaCha20-Poly1305 instead of AES GCM.
+ChaCha20-Poly1305 (ChaPoly) instead of AES GCM.
 
-TODO:
-[ ] Actually support expires flag (expiry is hard coded to 2 hours)
-[ ] Implement config file compatible with `ots`
+Backend supporting ChaPoly and AES GCM: https://github.com/ringvold/ots
 
-## Why Chacha20?
+**TODO:**
+- [ ] Actually support expires flag (expiry is hard coded to 2 hours)
+
+## Why ChaPoly?
 Some people seems to prefer ChaCha20-Poly1305 (ChaPoly for short) over AES 
 GCM. It does not require hardware acceleration to be fast. It might be a bit 
 more secure, theoretically, maybe, but what do I know, I'm no expert. 🤷‍♂️

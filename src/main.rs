@@ -1,13 +1,19 @@
 
+use chrono::NaiveDateTime;
 use rpassword::read_password;
 use clap::{Parser, Subcommand};
 use std::io::{Write};
+use serde::Deserialize;
+use base64::{encode};
+
+// use config::Config;
+// use std::collections::HashMap;
+
 use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     ChaCha20Poly1305, Error
 };
-use serde::Deserialize;
-use base64::{encode};
+
 const URL_SAFE_ENGINE: base64::engine::fast_portable::FastPortable =
     base64::engine::fast_portable::FastPortable::from(
         &base64::alphabet::URL_SAFE,
@@ -16,7 +22,7 @@ const URL_SAFE_ENGINE: base64::engine::fast_portable::FastPortable =
 #[derive(Deserialize, Debug)]
 struct CreateResponse {
     #[serde(rename = "expiresAt")]
-    expires_at: u32,
+    expires_at: i64,
     id: String,
 }
 
@@ -63,10 +69,6 @@ fn new(_expiration: Option<String>) {
 
     std::io::stdout().flush().unwrap();
     let secret = read_password().unwrap();
-
-    println!("Secret: {}", secret);
-    println!("Encrypting..");
-
     match encrypt(secret) {
         (Ok(ciphertext), nonce, key) => {
             // TODO: Might be a better way to concat
@@ -78,13 +80,24 @@ fn new(_expiration: Option<String>) {
                 .json(&serde_json::json!({
                     "encryptedBytes": encoded,
                     "expiresIn": 7200,
-                    "cipher": "chachapoly"
+                    "cipher": "chapoly"
                 }))
                 .send()
                 .unwrap()
                 .json()
                 .unwrap();
-            println!("URL: {:?}", create_url(key, res.id))
+            let url = create_url(key, res.id);
+            // TODO: Timestamp seems to not be correct. Some timezone stuff probably.
+            let formatted = NaiveDateTime::from_timestamp_opt(res.expires_at, 0).unwrap().format("%Y-%m-%d %H:%M:%S");
+            println!("Your secret is now available on the below URL.
+
+{}
+
+You should only share this URL with the intended recipient.
+
+Please note that once retrieved, the secret will no longer
+be available for viewing. If not viewed, the secret will
+automatically expire at approximately {}", url, formatted);
         },
         (Err(err),_,_) => panic!("{:?}", err),
     };

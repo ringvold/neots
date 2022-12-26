@@ -6,6 +6,8 @@ use chacha20poly1305::{
 use chrono::NaiveDateTime;
 use clap::{Parser, Subcommand};
 use config::Config;
+use reqwest::blocking::Response;
+use reqwest::header::HeaderMap;
 use rpassword::read_password;
 use serde::Deserialize;
 use std::io::{Write};
@@ -76,19 +78,9 @@ fn new(_expiration: Option<String>) {
             // TODO: Might be a better way to concat
             let ciphertext2: Vec<u8> = nonce.into_iter().chain(ciphertext.into_iter()).collect();
             let encoded = encode(&ciphertext2);
-            let client = reqwest::blocking::Client::new();
-            let resp = client
-                .post(app_config.api_url)
-                .json(&serde_json::json!({
-                    "encryptedBytes": encoded,
-                    "expiresIn": 7200,
-                    "cipher": "chapoly"
-                }))
-                .send()
-                .unwrap();
-            let view_url = resp.headers().get("X-View-Url").unwrap().to_str().unwrap().to_string();
-            let json: CreateResponse = resp.json()
-                .unwrap();
+            let resp = post(app_config.api_url, encoded);
+            let view_url = get_view_url(resp.headers());
+            let json: CreateResponse = resp.json().unwrap();
             let url = create_url(view_url, key);
             // TODO: Timestamp seems to not be correct. Some timezone stuff probably.
             let formatted = NaiveDateTime::from_timestamp_opt(json.expires_at, 0).unwrap().format("%Y-%m-%d %H:%M:%S");
@@ -116,11 +108,28 @@ fn app_config() -> AppConfig {
         .unwrap();
     settings.try_deserialize().unwrap()
 }
+
 fn encrypt(secret: String) -> (Result<Vec<u8>, Error>, Vec<u8>,Vec<u8>) {
     let key = ChaCha20Poly1305::generate_key(&mut OsRng);
     let cipher = ChaCha20Poly1305::new(&key);
     let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng); // 96-bits; unique per message
     (cipher.encrypt(&nonce, secret.as_ref()), nonce.to_vec(), key.to_vec())
+}
+
+fn post(api_url: String, encrypted_secret: String) -> Response {
+    let client = reqwest::blocking::Client::new();
+    client
+        .post(api_url)
+        .json(&serde_json::json!({
+            "encryptedBytes": encrypted_secret,
+            "expiresIn": 7200,
+            "cipher": "chapoly"
+        }))
+        .send()
+        .unwrap()
+}
+fn get_view_url(headers: &HeaderMap) -> String {
+    headers.get("X-View-Url").unwrap().to_str().unwrap().to_string()
 }
 
 fn create_url(view_url: String, key: Vec<u8>) -> String {

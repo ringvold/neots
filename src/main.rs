@@ -3,6 +3,9 @@ use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     ChaCha20Poly1305, Error
 };
+use aes_gcm::{
+    Aes256Gcm
+};
 use chrono::NaiveDateTime;
 use clap::{Parser, Subcommand};
 use config::Config;
@@ -45,9 +48,12 @@ struct Cli {
 enum Commands {
     /// Create end-to-end encrypted secret
     New {
-        /// The duration of the secret after which it will be deleted from the server. Supported units: s,m,h (default 24h0m0s)
-        #[arg(short, value_name = "x", long, value_name = "DURATION", default_value = "14h")]
-        expiration: Option<String>
+        /// The duration of the secret after which it will be deleted from the server. Supported units: s,m,h
+        #[arg(short, value_name = "x", long, value_name = "DURATION", default_value = "24h0m0s")]
+        expiration: Option<String>,
+        /// Cipher used for encryption
+        #[arg(short, value_name = "", long, value_name = "aes256gcm, chaploy", default_value = "aes256gcm")]
+        cipher: Option<String>
     },
 }
 
@@ -61,11 +67,11 @@ fn main() {
     let args = Cli::parse();
 
     match args.command {
-        Commands::New { expiration } => new(expiration),
+        Commands::New { expiration, cipher } => new(expiration, cipher),
     }
 }
 
-fn new(_expiration: Option<String>) {
+fn new(_expiration: Option<String>, cipher: Option<String>) {
     let app_config = app_config();
 
     println!("");
@@ -73,12 +79,13 @@ fn new(_expiration: Option<String>) {
 
     std::io::stdout().flush().unwrap();
     let secret = read_password().unwrap();
-    match encrypt(secret) {
-        (Ok(ciphertext), nonce, key) => {
+
+    match encrypt(secret, cipher) {
+        (Ok(ciphertext), nonce, key, cipher) => {
             // TODO: Might be a better way to concat
             let ciphertext2: Vec<u8> = nonce.into_iter().chain(ciphertext.into_iter()).collect();
             let encoded = encode(&ciphertext2);
-            let resp = post(app_config.api_url, encoded);
+            let resp = send_to_backend(app_config.api_url, encoded, cipher);
             let view_url = get_view_url(resp.headers());
             let json: CreateResponse = resp.json().unwrap();
             let url = create_url(view_url, key);
@@ -94,7 +101,8 @@ Please note that once retrieved, the secret will no longer
 be available for viewing. If not viewed, the secret will
 automatically expire at approximately {expires_at}",  url = url, expires_at = formatted);
         },
-        (Err(err),_,_) => panic!("{:?}", err),
+
+        (Err(err),_,_,_) => panic!("Could not encrypt secret: {:?}", err),
     };
 }
 
@@ -109,21 +117,46 @@ fn app_config() -> AppConfig {
     settings.try_deserialize().unwrap()
 }
 
-fn encrypt(secret: String) -> (Result<Vec<u8>, Error>, Vec<u8>,Vec<u8>) {
-    let key = ChaCha20Poly1305::generate_key(&mut OsRng);
-    let cipher = ChaCha20Poly1305::new(&key);
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng); // 96-bits; unique per message
-    (cipher.encrypt(&nonce, secret.as_ref()), nonce.to_vec(), key.to_vec())
+type EncryptionResult = (Result<Vec<u8>, Error>, Vec<u8>,Vec<u8>, String);
+
+fn encrypt(secret: String, maybe_cipher: Option<String>) -> EncryptionResult {
+    if let Some(cipher) = maybe_cipher {
+        match cipher.as_ref() {
+            "chapoly" => encrypt_chapoly(secret, cipher),
+            "aes256gcm" => encrypt_aes(secret, cipher),
+            _ => panic!("Unknown cipher {:?}", cipher),
+
+        }
+    }
+    else {
+        encrypt_aes(secret, "aes256gcm".to_string())
+    }
 }
 
-fn post(api_url: String, encrypted_secret: String) -> Response {
+fn encrypt_chapoly(secret: String, cipher_str: String) -> EncryptionResult {
+    let key = ChaCha20Poly1305::generate_key(&mut OsRng);
+    let cipher = ChaCha20Poly1305::new(&key);
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher.encrypt(&nonce, secret.as_ref());
+    (ciphertext, nonce.to_vec(), key.to_vec(), cipher_str)
+}
+
+fn encrypt_aes(secret: String, cipher_str: String) -> EncryptionResult {
+    let key = Aes256Gcm::generate_key(&mut OsRng);
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = cipher.encrypt(&nonce, secret.as_ref());
+    (ciphertext, nonce.to_vec(), key.to_vec(), cipher_str)
+}
+
+fn send_to_backend(api_url: String, encrypted_secret: String, cipher: String) -> Response {
     let client = reqwest::blocking::Client::new();
     client
         .post(api_url)
         .json(&serde_json::json!({
             "encryptedBytes": encrypted_secret,
             "expiresIn": 7200,
-            "cipher": "chapoly"
+            "cipher": cipher
         }))
         .send()
         .unwrap()

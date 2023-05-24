@@ -9,13 +9,14 @@ use aes_gcm::{
     Aes256Gcm
 };
 use chrono::NaiveDateTime;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use config::Config;
 use reqwest::blocking::Response;
 use reqwest::header::HeaderMap;
 use rpassword;
 use serde::Deserialize;
 use std::io::{self, BufRead};
+use std::fmt;
 
 use clap_duration::assign_duration_range_validator;
 use duration_human::{DurationHuman, DurationHumanValidator};
@@ -72,11 +73,10 @@ enum Commands {
         #[arg(
             short,
             long,
-            value_name = "aes256gcm, chaploy",
-            default_value = "aes256gcm",
+            default_value = Cipher::Aes256gcm.to_string(),
             help = "Cipher used for encryption"
         )]
-        cipher: String,
+        cipher: Cipher,
 
          #[arg(
             short = 's',
@@ -86,6 +86,25 @@ enum Commands {
         read_from_stdin: bool
     },
 }
+
+#[derive(Debug, Copy, Clone, serde_derive::Serialize, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Cipher {
+    /// AES 256 GCM
+    Aes256gcm,
+    ///  ChaCha20-Poly1305
+    Chapoly,
+}
+
+impl fmt::Display for Cipher {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Cipher::Aes256gcm => write!(f,"aes256gcm"),
+            Cipher::Chapoly => write!(f,"chapoly"),
+
+        }
+    }
+}
+
 
 #[derive(Debug, Default, serde_derive::Deserialize, PartialEq, Eq)]
 struct AppConfig {
@@ -101,11 +120,11 @@ fn main() {
     }
 }
 
-fn new(expiration: DurationHuman, cipher: String, read_from_stdin: bool) {
+fn new(expiration: DurationHuman, cipher: Cipher, read_from_stdin: bool) {
     let duration = get_duration(expiration.into());
     let secret = read_secret(read_from_stdin);
 
-    match encrypt(secret, cipher.to_owned()) {
+    match encrypt(secret, cipher) {
         (Ok(ciphertext), nonce, key) => {
             let ciphertext_with_nonce: Vec<u8> = [nonce,ciphertext].concat();
             let encoded = encode(&ciphertext_with_nonce);
@@ -178,11 +197,10 @@ fn get_duration(expiration: DurationHuman) -> Duration {
 
 type EncryptionResult = (Result<Vec<u8>, Error>, Vec<u8>,Vec<u8>);
 
-fn encrypt(secret: String, cipher: String) -> EncryptionResult {
-    match cipher.as_ref() {
-        "chapoly" => encrypt_chapoly(secret),
-        "aes256gcm" => encrypt_aes(secret),
-        _ => encrypt_aes(secret),
+fn encrypt(secret: String, cipher: Cipher) -> EncryptionResult {
+    match cipher {
+        Cipher::Chapoly => encrypt_chapoly(secret),
+        Cipher::Aes256gcm => encrypt_aes(secret),
     }
 }
 
@@ -202,7 +220,7 @@ fn encrypt_aes(secret: String) -> EncryptionResult {
     (ciphertext, nonce.to_vec(), key.to_vec())
 }
 
-fn send_to_backend(encrypted_secret: String, cipher: String, expiration: Duration) -> Response {
+fn send_to_backend(encrypted_secret: String, cipher: Cipher, expiration: Duration) -> Response {
     let app_config = app_config();
     let client = reqwest::blocking::Client::new();
     client
@@ -210,11 +228,12 @@ fn send_to_backend(encrypted_secret: String, cipher: String, expiration: Duratio
         .json(&serde_json::json!({
             "encryptedBytes": encrypted_secret,
             "expiresIn": expiration.as_secs(),
-            "cipher": cipher
+            "cipher": cipher.to_string()
         }))
         .send()
         .unwrap()
 }
+
 fn get_view_url(headers: &HeaderMap) -> String {
     headers.get("X-View-Url").unwrap().to_str().unwrap().to_string()
 }

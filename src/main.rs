@@ -1,12 +1,8 @@
-use std::time::Instant;
-use std::time::Duration;
-use base64::{encode};
+use aes_gcm::Aes256Gcm;
+use base64::encode;
 use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
-    ChaCha20Poly1305, Error
-};
-use aes_gcm::{
-    Aes256Gcm
+    ChaCha20Poly1305, Error,
 };
 use chrono::NaiveDateTime;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -15,8 +11,10 @@ use reqwest::blocking::Response;
 use reqwest::header::HeaderMap;
 use rpassword;
 use serde::Deserialize;
-use std::io::{self, BufRead};
 use std::fmt;
+use std::io::{self, BufRead};
+use std::time::Duration;
+use std::time::Instant;
 
 use clap_duration::assign_duration_range_validator;
 use duration_human::{DurationHuman, DurationHumanValidator};
@@ -26,7 +24,8 @@ assign_duration_range_validator!( EXPIRATION_RANGE = {default: 2h, min: 5min, ma
 const URL_SAFE_ENGINE: base64::engine::fast_portable::FastPortable =
     base64::engine::fast_portable::FastPortable::from(
         &base64::alphabet::URL_SAFE,
-        base64::engine::fast_portable::PAD);
+        base64::engine::fast_portable::PAD,
+    );
 
 #[derive(Deserialize, Debug)]
 struct CreateResponse {
@@ -55,8 +54,7 @@ struct Cli {
     config: Option<String>,
 }
 
-#[derive(Subcommand)]
-#[derive(Debug)]
+#[derive(Subcommand, Debug)]
 enum Commands {
     /// Create end-to-end encrypted secret
     New {
@@ -78,16 +76,18 @@ enum Commands {
         )]
         cipher: Cipher,
 
-         #[arg(
+        #[arg(
             short = 's',
             long,
             help = "Read from stdin. Useful for reading files through unix pipes"
         )]
-        read_from_stdin: bool
+        read_from_stdin: bool,
     },
 }
 
-#[derive(Debug, Copy, Clone, serde_derive::Serialize, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+#[derive(
+    Debug, Copy, Clone, serde_derive::Serialize, PartialEq, Eq, PartialOrd, Ord, ValueEnum,
+)]
 enum Cipher {
     /// AES 256 GCM
     Aes256gcm,
@@ -98,13 +98,11 @@ enum Cipher {
 impl fmt::Display for Cipher {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Cipher::Aes256gcm => write!(f,"aes256gcm"),
-            Cipher::Chapoly => write!(f,"chapoly"),
-
+            Cipher::Aes256gcm => write!(f, "aes256gcm"),
+            Cipher::Chapoly => write!(f, "chapoly"),
         }
     }
 }
-
 
 #[derive(Debug, Default, serde_derive::Deserialize, PartialEq, Eq)]
 struct AppConfig {
@@ -116,7 +114,11 @@ fn main() {
     let args = Cli::parse();
 
     match args.command {
-        Commands::New { expiration, cipher, read_from_stdin } => new(expiration, cipher, read_from_stdin),
+        Commands::New {
+            expiration,
+            cipher,
+            read_from_stdin,
+        } => new(expiration, cipher, read_from_stdin),
     }
 }
 
@@ -126,14 +128,17 @@ fn new(expiration: DurationHuman, cipher: Cipher, read_from_stdin: bool) {
 
     match encrypt(secret, cipher) {
         (Ok(ciphertext), nonce, key) => {
-            let ciphertext_with_nonce: Vec<u8> = [nonce,ciphertext].concat();
+            let ciphertext_with_nonce: Vec<u8> = [nonce, ciphertext].concat();
             let encoded = encode(&ciphertext_with_nonce);
             let resp = send_to_backend(encoded, cipher, duration);
             let view_url = get_view_url(resp.headers());
             let json: CreateResponse = resp.json().unwrap();
             let url = create_url(view_url, key);
-            let formatted = NaiveDateTime::from_timestamp_opt(json.expires_at, 0).unwrap().format("%Y-%m-%d %H:%M:%S");
-            println!("Your secret is now available on the below URL.
+            let formatted = NaiveDateTime::from_timestamp_opt(json.expires_at, 0)
+                .unwrap()
+                .format("%Y-%m-%d %H:%M:%S");
+            println!(
+                "Your secret is now available on the below URL.
 
 {url}
 
@@ -141,18 +146,20 @@ You should only share this URL with the intended recipient.
 
 Please note that once retrieved, the secret will no longer
 be available for viewing. If not viewed, the secret will
-automatically expire at approximately {expires_at} UTC",  url = url, expires_at = formatted);
-        },
+automatically expire at approximately {expires_at} UTC",
+                url = url,
+                expires_at = formatted
+            );
+        }
 
-        (Err(err),_,_) => panic!("Could not encrypt secret: {:?}", err),
+        (Err(err), _, _) => panic!("Could not encrypt secret: {:?}", err),
     };
 }
 
 fn read_secret(read_from_stdin: bool) -> String {
     if read_from_stdin {
         read_stdin().unwrap()
-    }
-    else {
+    } else {
         println!("");
         rpassword::prompt_password("Enter your secret: ").unwrap()
     }
@@ -183,7 +190,11 @@ fn app_config() -> AppConfig {
     let config_file = format!("{}/.ots.yaml", home);
     let settings = Config::builder()
         .add_source(config::File::with_name(&config_file))
-        .add_source(config::Environment::with_prefix("OTS").separator("_").prefix_separator("_"))
+        .add_source(
+            config::Environment::with_prefix("OTS")
+                .separator("_")
+                .prefix_separator("_"),
+        )
         .build()
         .unwrap();
     settings.try_deserialize().unwrap()
@@ -195,7 +206,7 @@ fn get_duration(expiration: DurationHuman) -> Duration {
     then - now
 }
 
-type EncryptionResult = (Result<Vec<u8>, Error>, Vec<u8>,Vec<u8>);
+type EncryptionResult = (Result<Vec<u8>, Error>, Vec<u8>, Vec<u8>);
 
 fn encrypt(secret: String, cipher: Cipher) -> EncryptionResult {
     match cipher {
@@ -235,7 +246,12 @@ fn send_to_backend(encrypted_secret: String, cipher: Cipher, expiration: Duratio
 }
 
 fn get_view_url(headers: &HeaderMap) -> String {
-    headers.get("X-View-Url").unwrap().to_str().unwrap().to_string()
+    headers
+        .get("X-View-Url")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
 fn create_url(view_url: String, key: Vec<u8>) -> String {

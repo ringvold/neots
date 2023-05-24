@@ -6,7 +6,7 @@ use chacha20poly1305::{
 };
 use chrono::NaiveDateTime;
 use clap::{Parser, Subcommand, ValueEnum};
-use config::Config;
+use config::{Config, ConfigError};
 use reqwest::blocking::Response;
 use reqwest::header::HeaderMap;
 use rpassword;
@@ -49,6 +49,7 @@ from the server upon retrieval therefore can only be viewed once.
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
     // Configuration file
     #[arg(short, long, default_value = "~/ots.yaml")]
     config: Option<String>,
@@ -185,10 +186,10 @@ fn read_stdin() -> io::Result<String> {
     Ok(user_input)
 }
 
-fn app_config() -> AppConfig {
+fn app_config() -> Result<AppConfig, ConfigError> {
     let home = shellexpand::tilde("~");
     let config_file = format!("{}/.ots.yaml", home);
-    let settings = Config::builder()
+    Config::builder()
         .add_source(config::File::with_name(&config_file))
         .add_source(
             config::Environment::with_prefix("OTS")
@@ -196,8 +197,7 @@ fn app_config() -> AppConfig {
                 .prefix_separator("_"),
         )
         .build()
-        .unwrap();
-    settings.try_deserialize().unwrap()
+        .and_then(|settings| settings.try_deserialize())
 }
 
 fn get_duration(expiration: DurationHuman) -> Duration {
@@ -232,7 +232,9 @@ fn encrypt_aes(secret: String) -> EncryptionResult {
 }
 
 fn send_to_backend(encrypted_secret: String, cipher: Cipher, expiration: Duration) -> Response {
-    let app_config = app_config();
+    let app_config = app_config().unwrap_or(AppConfig {
+        api_url: "https://ots.fly.dev/api".to_string(),
+    });
     let client = reqwest::blocking::Client::new();
     client
         .post(app_config.api_url)

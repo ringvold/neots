@@ -15,7 +15,8 @@ use reqwest::blocking::Response;
 use reqwest::header::HeaderMap;
 use rpassword;
 use serde::Deserialize;
-use std::io::{Write};
+use std::io::{self, BufRead};
+
 use clap_duration::assign_duration_range_validator;
 use duration_human::{DurationHuman, DurationHumanValidator};
 
@@ -28,7 +29,6 @@ const URL_SAFE_ENGINE: base64::engine::fast_portable::FastPortable =
 
 #[derive(Deserialize, Debug)]
 struct CreateResponse {
-
     #[serde(rename = "expiresAt")]
     expires_at: i64,
 }
@@ -76,7 +76,14 @@ enum Commands {
             default_value = "aes256gcm",
             help = "Cipher used for encryption"
         )]
-        cipher: String
+        cipher: String,
+
+         #[arg(
+            short = 's',
+            long,
+            help = "Read from stdin. Useful for reading files through unix pipes"
+        )]
+        read_from_stdin: bool
     },
 }
 
@@ -90,13 +97,13 @@ fn main() {
     let args = Cli::parse();
 
     match args.command {
-        Commands::New { expiration, cipher } => new(expiration, cipher),
+        Commands::New { expiration, cipher, read_from_stdin } => new(expiration, cipher, read_from_stdin),
     }
 }
 
-fn new(expiration: DurationHuman, cipher: String) {
+fn new(expiration: DurationHuman, cipher: String, read_from_stdin: bool) {
     let duration = get_duration(expiration.into());
-    let secret = read_secret();
+    let secret = read_secret(read_from_stdin);
 
     match encrypt(secret, cipher.to_owned()) {
         (Ok(ciphertext), nonce, key) => {
@@ -122,10 +129,34 @@ automatically expire at approximately {expires_at} UTC",  url = url, expires_at 
     };
 }
 
-fn read_secret() -> String {
-    println!("");
-    std::io::stdout().flush().unwrap();
-    rpassword::prompt_password("Enter your secret:").unwrap()
+fn read_secret(read_from_stdin: bool) -> String {
+    if read_from_stdin {
+        read_stdin().unwrap()
+    }
+    else {
+        println!("");
+        rpassword::prompt_password("Enter your secret: ").unwrap()
+    }
+}
+
+fn read_stdin() -> io::Result<String> {
+    let mut lines = io::stdin().lock().lines();
+    let mut user_input = String::new();
+
+    while let Some(line) = lines.next() {
+        let last_input = line.unwrap();
+        // stop reading
+        if last_input.len() == 0 {
+            break;
+        }
+        // add a new line once user_input starts storing user input
+        if user_input.len() > 0 {
+            user_input.push_str("\n");
+        }
+        // store user input
+        user_input.push_str(&last_input);
+    }
+    Ok(user_input)
 }
 
 fn app_config() -> AppConfig {
